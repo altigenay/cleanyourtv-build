@@ -52,13 +52,18 @@ jobs:
         env:
           KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
-          # The launcher's release build is signed with the debug signing config: the key below.
-          mkdir -p ~/.android
-          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          [ -n "$KEYSTORE_B64" ] || { echo "DEBUG_KEYSTORE_B64 secret is missing"; exit 1; }
           cd upstream/launcher
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           ./gradlew assembleRelease -q --console=plain
-          rm -f ~/.android/debug.keystore
+          # Signed again with the key of the copies already installed, wherever Gradle took its debug key from.
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/key.jks"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          OUT=app/build/outputs/apk/release
+          "$BT/zipalign" -p -f 4 "$OUT/app-release.apk" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$RUNNER_TEMP/key.jks" --ks-pass pass:android --ks-key-alias androiddebugkey --key-pass pass:android \
+            --v4-signing-enabled false --out "$OUT/app-release.apk" "$RUNNER_TEMP/aligned.apk"
+          rm -f "$RUNNER_TEMP/key.jks"
 
       - name: Check and publish
         if: steps.tag.outputs.skip != '1'

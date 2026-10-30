@@ -74,9 +74,9 @@ jobs:
           CERT=$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
           [ "$CERT" = "$SIGNER" ] || { echo "Signed with $CERT, expected $SIGNER"; exit 1; }
           INFO=$("$BT/aapt2" dump badging "$APK" | head -1)
-          PKG=$(echo "$INFO" | sed -n "s/.*name='\([^']*\)'.*/\1/p")
-          CODE=$(echo "$INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
-          NAME=$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          PKG=$(echo "$INFO" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+          CODE=$(echo "$INFO" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")
+          NAME=$(echo "$INFO" | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")
           [ "$PKG" = com.gathin.tvhome ] || { echo "Unexpected package $PKG"; exit 1; }
           FILE=cleanyourtv-launcher-$NAME.apk
           cp "$APK" "$FILE"

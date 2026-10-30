@@ -1,0 +1,83 @@
+name: Build CleanYourTV launcher
+
+# Once a day: if github.com/Gathin23/cleanyourtv has a release tag this repository has not built yet, build its
+# launcher APK, sign it with the same key as the copies already on the TVs (so it installs as an update), check the
+# signature, and publish it here with latest.json (version, file, SHA-256, size) for App Pull&Push to read.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to build (empty: the latest)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: Gathin23/cleanyourtv
+      # SHA-256 of the signing certificate; a build signed with anything else is not published.
+      SIGNER: 9c9b366692f6cfd12ec35706adb0b83d8c8da8d3c1e6116040974a68530f97a3
+    steps:
+      - name: Find the tag to build
+        id: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          [ -n "$TAG" ] || TAG=$(gh api repos/$UPSTREAM/releases/latest -q .tag_name)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Already built: $TAG"; echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.tag.outputs.skip != '1'
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ steps.tag.outputs.tag }}
+          path: upstream
+
+      - uses: actions/setup-java@v4
+        if: steps.tag.outputs.skip != '1'
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build
+        if: steps.tag.outputs.skip != '1'
+        env:
+          KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          # The launcher's release build is signed with the debug signing config: the key below.
+          mkdir -p ~/.android
+          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          cd upstream/launcher
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          ./gradlew assembleRelease -q --console=plain
+          rm -f ~/.android/debug.keystore
+
+      - name: Check and publish
+        if: steps.tag.outputs.skip != '1'
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          APK=upstream/launcher/app/build/outputs/apk/release/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          CERT=$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/.*certificate SHA-256 digest: //p' | head -1)
+          [ "$CERT" = "$SIGNER" ] || { echo "Signed with $CERT, expected $SIGNER"; exit 1; }
+          INFO=$("$BT/aapt2" dump badging "$APK" | head -1)
+          PKG=$(echo "$INFO" | sed -n "s/.*name='\([^']*\)'.*/\1/p")
+          CODE=$(echo "$INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")
+          NAME=$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+          [ "$PKG" = com.gathin.tvhome ] || { echo "Unexpected package $PKG"; exit 1; }
+          FILE=cleanyourtv-launcher-$NAME.apk
+          cp "$APK" "$FILE"
+          SHA=$(sha256sum "$FILE" | cut -d' ' -f1)
+          printf '{"tag":"%s","version":"%s","versionCode":%s,"file":"%s","sha256":"%s","size":%s,"signer":"%s"}\n' \
+            "$TAG" "$NAME" "$CODE" "$FILE" "$SHA" "$(stat -c %s "$FILE")" "$SIGNER" > latest.json
+          cat latest.json
+          gh release create "$TAG" "$FILE" latest.json -R "$GITHUB_REPOSITORY" --title "CleanYourTV launcher $NAME" \
+            --notes "Built from $UPSTREAM $TAG (MIT). Launcher only; the debloat tools and docs are in the upstream repository. SHA-256 in latest.json."
